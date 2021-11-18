@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, minimum-scale=1" />
 <meta name="generator" content="pdoc 0.10.0" />
-<title>geo_dome.tessellation API documentation</title>
+<title>geodome.tessellation API documentation</title>
 <meta name="description" content="" />
 <link rel="preload stylesheet" as="style" href="https://cdnjs.cloudflare.com/ajax/libs/10up-sanitize.css/11.0.1/sanitize.min.css" integrity="sha256-PK9q560IAAa6WVRRh76LtCaI8pjTJ2z11v0miyNNjrs=" crossorigin>
 <link rel="preload stylesheet" as="style" href="https://cdnjs.cloudflare.com/ajax/libs/10up-sanitize.css/11.0.1/typography.min.css" integrity="sha256-7l/o7C8jubJiy74VsKTidCy1yBkRtiUGbVkYBylBqUg=" crossorigin>
@@ -19,7 +19,7 @@
 <main>
 <article id="content">
 <header>
-<h1 class="title">Module <code>geo_dome.tessellation</code></h1>
+<h1 class="title">Module <code>geodome.tessellation</code></h1>
 </header>
 <section id="section-intro">
 <details class="source">
@@ -28,11 +28,12 @@
 </summary>
 <pre><code class="python">import numpy as np
 from numba import njit
+from numba.typed import Dict
 from typing import Union
 import math
 
 try:
-    from geo_dome.neighbourhood_search import *
+    from geodome.neighbourhood_search import *
 except:
     from neighbourhood_search import *
 
@@ -59,7 +60,6 @@ def find_adjacent_triangles(triangles: np.ndarray, vertices: np.ndarray) -&gt; n
             found_triangles[found_index] = i
             found_index += 1
 
-    # found_triangles = np.resize(found_triangles, found_index)
     resized = np.zeros(found_index, dtype=np.int64)
     for i in range(found_index):
         resized[i] = found_triangles[i]
@@ -91,8 +91,7 @@ def normalise_length(coords: np.ndarray) -&gt; np.ndarray:
         np.ndarray: normalised coordinate
     &#34;&#34;&#34;
     length = math.sqrt(
-        math.pow(coords[0], 2) + math.pow(coords[1], 2) +
-        math.pow(coords[2], 2)
+        math.pow(coords[0], 2) + math.pow(coords[1], 2) + math.pow(coords[2], 2)
     )
 
     is_zero(coords, &#34;normalise&#34;)
@@ -104,19 +103,6 @@ def normalise_length(coords: np.ndarray) -&gt; np.ndarray:
             (coords[2] / length) * SCALE,
         ]
     )
-
-
-@njit
-def normalise_all(new_vertices: np.ndarray) -&gt; None:
-    &#34;&#34;&#34;Normalises all the vertices in an array
-
-    Args:
-        new_vertices (np.ndarray): the array of vertices
-    &#34;&#34;&#34;
-    zeros = np.zeros(3, dtype=np.float64)
-    for i in range(len(new_vertices)):
-        if (new_vertices[i] != zeros).all():
-            new_vertices[i] = normalise_length(new_vertices[i])
 
 
 @njit
@@ -138,13 +124,19 @@ def get_middle_coords(v1: np.ndarray, v2: np.ndarray) -&gt; np.ndarray:
 
 
 @njit
-def add_middle_get_index(matrix: np.ndarray, new_vertices: np.ndarray,
-                         old_vertices: np.ndarray, v_index: np.int64, v1: np.int64, v2: np.int64) -&gt; Union[np.int64, np.int64]:
+def old_add_middle_get_index(
+    matrix: np.ndarray,
+    new_vertices: np.ndarray,
+    old_vertices: np.ndarray,
+    v_index: np.int64,
+    v1: np.int64,
+    v2: np.int64,
+) -&gt; Union[np.int64, np.int64]:
     &#34;&#34;&#34;Matrix based method for inserting new vertices with the guarantee of uniqueness
 
     Args:
-        matrix (np.ndarray): (Nvertices x Nvertices) matrix 
-        new_vertices (np.ndarray): Array to store new vertices 
+        matrix (np.ndarray): (Nvertices x Nvertices) matrix
+        new_vertices (np.ndarray): Array to store new vertices
         old_vertices (np.ndarray): Array of old vertices
         v_index (np.int64): Current index of new vertices
         v1 (np.int64): Index of outer vertex
@@ -153,14 +145,50 @@ def add_middle_get_index(matrix: np.ndarray, new_vertices: np.ndarray,
     Returns:
         Union[np.int64, np.int64]: index of inserted vertex, new v_index
     &#34;&#34;&#34;
-    if (matrix[v1][v2] == -1):
+    if matrix[v1][v2] == -1:
         matrix[v1][v2] = v_index
         matrix[v2][v1] = v_index
-        new_vertices[v_index] = get_middle_coords(
-            old_vertices[v1], old_vertices[v2])
+        new_vertices[v_index] = get_middle_coords(old_vertices[v1], old_vertices[v2])
         v_index += 1
 
     return matrix[v1][v2], v_index
+
+
+@njit
+def add_vertex_get_index(mid: np.ndarray, vertices: np.ndarray, v_dict: Dict):
+    &#34;&#34;&#34;Adds a given midpoint to a list of new vertices
+
+    Args:
+        mid (np.ndarray): the midpoint to add
+        vertices (np.ndarray): an array of new vertices, to be concatenated with
+        existing vertices
+        v_index (Dict): dictionary containing the indexes of existing midpoints,
+        to prevent duplicates
+
+    Returns:
+        int: the index of the midpoint that was added to vertices
+    &#34;&#34;&#34;
+    # Creating (hopefully) unique key for each coordinate
+    mid_sum = mid[0] * 100 + mid[1] * 10 + mid[2]
+    # Adding key to dictionary of coords with index as value
+    inserted = False
+
+    while not inserted:
+        if mid_sum not in v_dict:
+            v_dict[mid_sum] = len(v_dict)
+            inserted = True
+        else:
+            if (mid != vertices[v_dict[mid_sum]]).any():
+                mid_sum += 100
+            else:
+                break
+
+    index = v_dict[mid_sum]
+    # Add new midpoint to new vertices array
+    if (vertices[index] == np.array([0, 0, 0])).all():
+        vertices[index] = mid
+
+    return index
 
 
 @njit
@@ -184,14 +212,16 @@ def calc_dist(points) -&gt; list:
 
 @njit
 def tessellate_geodesic_dome(
-    vertices: np.ndarray, triangles: np.ndarray, target_triangles: np.ndarray = None
+    vertices: np.ndarray,
+    triangles: np.ndarray,
+    target_triangles: np.ndarray = np.zeros(0, dtype=np.int64),
 ) -&gt; Union[np.ndarray, np.ndarray]:
     &#34;&#34;&#34;Tessellates the target triangles in the dome
 
     Args:
         vertices (np.ndarray): Array of vertices
         triangles (np.ndarray): Array of triangles
-        target_triangles (np.ndarray): Target triangles to tessellate 
+        target_triangles (np.ndarray): Target triangles to tessellate
                                         (optional: tessellates all triangles if not given)
 
     Returns:
@@ -200,25 +230,27 @@ def tessellate_geodesic_dome(
     &#34;&#34;&#34;
 
     # Fill target with all triangles if not given
-    if (target_triangles == None):
+    if len(target_triangles) == 0:
         target_triangles = np.arange(len(triangles))
 
     # First calculate the number of edges covered by the current triangles
-
-    generous_edge_count = len(target_triangles) * 3
 
     # create new array for new triangles
     n_new_triangles = len(triangles) + 3 * len(target_triangles)
     new_triangles = np.zeros((n_new_triangles, 3), dtype=np.int64)
     n_old_vertices = len(vertices)
+    generous_edge_count = len(target_triangles) * 3 + n_old_vertices
     # create new array for new vertices
     new_vertices = np.zeros((generous_edge_count, 3), dtype=np.float64)
-    vertex_matrix = np.full((len(vertices), len(vertices)), -1, dtype=np.int64)
-    v_index = 0
+    v_dict = Dict.empty(key_type=np.float64, value_type=np.int64)
 
     i = 0
 
     hit_triangles = np.zeros((len(triangles)), dtype=np.int8)
+
+    # Add all existing vertices to dictionary
+    for v in vertices:
+        add_vertex_get_index(v, new_vertices, v_dict)
 
     for t in target_triangles:
         tri = triangles[t]
@@ -228,17 +260,14 @@ def tessellate_geodesic_dome(
         v1 = vertices[tri[1]]
         v2 = vertices[tri[2]]
 
-        # Get midpoints for each edge of the triangle
-        index01, v_index = add_middle_get_index(
-            vertex_matrix, new_vertices, vertices, v_index, tri[0], tri[1])
-        index12, v_index = add_middle_get_index(
-            vertex_matrix, new_vertices, vertices, v_index, tri[1], tri[2])
-        index02, v_index = add_middle_get_index(
-            vertex_matrix, new_vertices, vertices,  v_index, tri[0], tri[2])
+        # Get midpoints for each edge of the triangle and normalise
+        mid01 = normalise_length(get_middle_coords(v0, v1))
+        mid12 = normalise_length(get_middle_coords(v1, v2))
+        mid02 = normalise_length(get_middle_coords(v0, v2))
 
-        index01 += n_old_vertices
-        index12 += n_old_vertices
-        index02 += n_old_vertices
+        index01 = add_vertex_get_index(mid01, new_vertices, v_dict)
+        index12 = add_vertex_get_index(mid12, new_vertices, v_dict)
+        index02 = add_vertex_get_index(mid02, new_vertices, v_dict)
 
         # Create new triangles
         new_triangles[i] = [tri[0], index01, index02]
@@ -255,22 +284,21 @@ def tessellate_geodesic_dome(
             new_triangles[i] = t
             i += 1
 
-    normalise_all(new_vertices)
-    # Keep track of all previous vertices
-    old_vertices = vertices
     # Create array to concatenate old vertices with new midpoints
-    vertices = np.zeros(
-        (len(old_vertices) + v_index, 3), dtype=np.float64)
+    vertices = np.zeros((len(v_dict), 3), dtype=np.float64)
 
-    i = 0
-    # Add old vertices
-    for v in old_vertices:
-        vertices[i] = v
-        i += 1
-    # Add new midpoints
-    for j in range(v_index):
-        vertices[i] = new_vertices[j]
-        i += 1
+    for i in range(len(v_dict)):
+        vertices[i] = new_vertices[i]
+
+    # i = 0
+    # # Add old vertices
+    # for v in old_vertices:
+    #     vertices[i] = v
+    #     i += 1
+    # # Add new midpoints
+    # for j in range(v_index):
+    #     vertices[i] = new_vertices[j]
+    #     i += 1
 
     new_adj_list = create_adj_list(vertices, new_triangles)
     return vertices, new_triangles, new_adj_list
@@ -352,8 +380,7 @@ def create_geodesic_dome(freq=0) -&gt; Union[np.ndarray, np.ndarray, np.ndarray]
     # Tessellate icosahedron
     adj_list = create_adj_list(vertices, triangles)
     for i in range(freq):
-        vertices, triangles, adj_list = tessellate_geodesic_dome(
-            vertices, triangles)
+        vertices, triangles, adj_list = tessellate_geodesic_dome(vertices, triangles)
     return vertices, triangles, adj_list</code></pre>
 </details>
 </section>
@@ -364,62 +391,69 @@ def create_geodesic_dome(freq=0) -&gt; Union[np.ndarray, np.ndarray, np.ndarray]
 <section>
 <h2 class="section-title" id="header-functions">Functions</h2>
 <dl>
-<dt id="geo_dome.tessellation.add_middle_get_index"><code class="name flex">
-<span>def <span class="ident">add_middle_get_index</span></span>(<span>matrix: numpy.ndarray, new_vertices: numpy.ndarray, old_vertices: numpy.ndarray, v_index: numpy.int64, v1: numpy.int64, v2: numpy.int64) ‑> numpy.int64</span>
+<dt id="geodome.tessellation.add_vertex_get_index"><code class="name flex">
+<span>def <span class="ident">add_vertex_get_index</span></span>(<span>mid: numpy.ndarray, vertices: numpy.ndarray, v_dict: numba.typed.typeddict.Dict)</span>
 </code></dt>
 <dd>
-<div class="desc"><p>Matrix based method for inserting new vertices with the guarantee of uniqueness</p>
+<div class="desc"><p>Adds a given midpoint to a list of new vertices</p>
 <h2 id="args">Args</h2>
 <dl>
-<dt><strong><code>matrix</code></strong> :&ensp;<code>np.ndarray</code></dt>
-<dd>(Nvertices x Nvertices) matrix </dd>
-<dt><strong><code>new_vertices</code></strong> :&ensp;<code>np.ndarray</code></dt>
-<dd>Array to store new vertices </dd>
-<dt><strong><code>old_vertices</code></strong> :&ensp;<code>np.ndarray</code></dt>
-<dd>Array of old vertices</dd>
-<dt><strong><code>v_index</code></strong> :&ensp;<code>np.int64</code></dt>
-<dd>Current index of new vertices</dd>
-<dt><strong><code>v1</code></strong> :&ensp;<code>np.int64</code></dt>
-<dd>Index of outer vertex</dd>
-<dt><strong><code>v2</code></strong> :&ensp;<code>np.int64</code></dt>
-<dd>Index of other outer vertex</dd>
+<dt><strong><code>mid</code></strong> :&ensp;<code>np.ndarray</code></dt>
+<dd>the midpoint to add</dd>
+<dt><strong><code>vertices</code></strong> :&ensp;<code>np.ndarray</code></dt>
+<dd>an array of new vertices, to be concatenated with</dd>
+<dt>existing vertices</dt>
+<dt><strong><code>v_index</code></strong> :&ensp;<code>Dict</code></dt>
+<dd>dictionary containing the indexes of existing midpoints,</dd>
 </dl>
+<p>to prevent duplicates</p>
 <h2 id="returns">Returns</h2>
 <dl>
-<dt><code>Union[np.int64, np.int64]</code></dt>
-<dd>index of inserted vertex, new v_index</dd>
+<dt><code>int</code></dt>
+<dd>the index of the midpoint that was added to vertices</dd>
 </dl></div>
 <details class="source">
 <summary>
 <span>Expand source code</span>
 </summary>
 <pre><code class="python">@njit
-def add_middle_get_index(matrix: np.ndarray, new_vertices: np.ndarray,
-                         old_vertices: np.ndarray, v_index: np.int64, v1: np.int64, v2: np.int64) -&gt; Union[np.int64, np.int64]:
-    &#34;&#34;&#34;Matrix based method for inserting new vertices with the guarantee of uniqueness
+def add_vertex_get_index(mid: np.ndarray, vertices: np.ndarray, v_dict: Dict):
+    &#34;&#34;&#34;Adds a given midpoint to a list of new vertices
 
     Args:
-        matrix (np.ndarray): (Nvertices x Nvertices) matrix 
-        new_vertices (np.ndarray): Array to store new vertices 
-        old_vertices (np.ndarray): Array of old vertices
-        v_index (np.int64): Current index of new vertices
-        v1 (np.int64): Index of outer vertex
-        v2 (np.int64): Index of other outer vertex
+        mid (np.ndarray): the midpoint to add
+        vertices (np.ndarray): an array of new vertices, to be concatenated with
+        existing vertices
+        v_index (Dict): dictionary containing the indexes of existing midpoints,
+        to prevent duplicates
 
     Returns:
-        Union[np.int64, np.int64]: index of inserted vertex, new v_index
+        int: the index of the midpoint that was added to vertices
     &#34;&#34;&#34;
-    if (matrix[v1][v2] == -1):
-        matrix[v1][v2] = v_index
-        matrix[v2][v1] = v_index
-        new_vertices[v_index] = get_middle_coords(
-            old_vertices[v1], old_vertices[v2])
-        v_index += 1
+    # Creating (hopefully) unique key for each coordinate
+    mid_sum = mid[0] * 100 + mid[1] * 10 + mid[2]
+    # Adding key to dictionary of coords with index as value
+    inserted = False
 
-    return matrix[v1][v2], v_index</code></pre>
+    while not inserted:
+        if mid_sum not in v_dict:
+            v_dict[mid_sum] = len(v_dict)
+            inserted = True
+        else:
+            if (mid != vertices[v_dict[mid_sum]]).any():
+                mid_sum += 100
+            else:
+                break
+
+    index = v_dict[mid_sum]
+    # Add new midpoint to new vertices array
+    if (vertices[index] == np.array([0, 0, 0])).all():
+        vertices[index] = mid
+
+    return index</code></pre>
 </details>
 </dd>
-<dt id="geo_dome.tessellation.calc_dist"><code class="name flex">
+<dt id="geodome.tessellation.calc_dist"><code class="name flex">
 <span>def <span class="ident">calc_dist</span></span>(<span>points) ‑> list</span>
 </code></dt>
 <dd>
@@ -457,7 +491,7 @@ def calc_dist(points) -&gt; list:
     return distances</code></pre>
 </details>
 </dd>
-<dt id="geo_dome.tessellation.create_geodesic_dome"><code class="name flex">
+<dt id="geodome.tessellation.create_geodesic_dome"><code class="name flex">
 <span>def <span class="ident">create_geodesic_dome</span></span>(<span>freq=0) ‑> numpy.ndarray</span>
 </code></dt>
 <dd>
@@ -556,12 +590,11 @@ def create_geodesic_dome(freq=0) -&gt; Union[np.ndarray, np.ndarray, np.ndarray]
     # Tessellate icosahedron
     adj_list = create_adj_list(vertices, triangles)
     for i in range(freq):
-        vertices, triangles, adj_list = tessellate_geodesic_dome(
-            vertices, triangles)
+        vertices, triangles, adj_list = tessellate_geodesic_dome(vertices, triangles)
     return vertices, triangles, adj_list</code></pre>
 </details>
 </dd>
-<dt id="geo_dome.tessellation.find_adjacent_triangles"><code class="name flex">
+<dt id="geodome.tessellation.find_adjacent_triangles"><code class="name flex">
 <span>def <span class="ident">find_adjacent_triangles</span></span>(<span>triangles: numpy.ndarray, vertices: numpy.ndarray) ‑> numpy.ndarray</span>
 </code></dt>
 <dd>
@@ -602,7 +635,6 @@ def find_adjacent_triangles(triangles: np.ndarray, vertices: np.ndarray) -&gt; n
             found_triangles[found_index] = i
             found_index += 1
 
-    # found_triangles = np.resize(found_triangles, found_index)
     resized = np.zeros(found_index, dtype=np.int64)
     for i in range(found_index):
         resized[i] = found_triangles[i]
@@ -610,7 +642,7 @@ def find_adjacent_triangles(triangles: np.ndarray, vertices: np.ndarray) -&gt; n
     return resized</code></pre>
 </details>
 </dd>
-<dt id="geo_dome.tessellation.get_middle_coords"><code class="name flex">
+<dt id="geodome.tessellation.get_middle_coords"><code class="name flex">
 <span>def <span class="ident">get_middle_coords</span></span>(<span>v1: numpy.ndarray, v2: numpy.ndarray) ‑> numpy.ndarray</span>
 </code></dt>
 <dd>
@@ -649,7 +681,7 @@ def get_middle_coords(v1: np.ndarray, v2: np.ndarray) -&gt; np.ndarray:
     return ret</code></pre>
 </details>
 </dd>
-<dt id="geo_dome.tessellation.is_zero"><code class="name flex">
+<dt id="geodome.tessellation.is_zero"><code class="name flex">
 <span>def <span class="ident">is_zero</span></span>(<span>coord, message='') ‑> None</span>
 </code></dt>
 <dd>
@@ -677,34 +709,7 @@ def is_zero(coord, message=&#34;&#34;) -&gt; None:
         print(&#34;Something is zero that shouldn&#39;t be: &#34; + message)</code></pre>
 </details>
 </dd>
-<dt id="geo_dome.tessellation.normalise_all"><code class="name flex">
-<span>def <span class="ident">normalise_all</span></span>(<span>new_vertices: numpy.ndarray) ‑> None</span>
-</code></dt>
-<dd>
-<div class="desc"><p>Normalises all the vertices in an array</p>
-<h2 id="args">Args</h2>
-<dl>
-<dt><strong><code>new_vertices</code></strong> :&ensp;<code>np.ndarray</code></dt>
-<dd>the array of vertices</dd>
-</dl></div>
-<details class="source">
-<summary>
-<span>Expand source code</span>
-</summary>
-<pre><code class="python">@njit
-def normalise_all(new_vertices: np.ndarray) -&gt; None:
-    &#34;&#34;&#34;Normalises all the vertices in an array
-
-    Args:
-        new_vertices (np.ndarray): the array of vertices
-    &#34;&#34;&#34;
-    zeros = np.zeros(3, dtype=np.float64)
-    for i in range(len(new_vertices)):
-        if (new_vertices[i] != zeros).all():
-            new_vertices[i] = normalise_length(new_vertices[i])</code></pre>
-</details>
-</dd>
-<dt id="geo_dome.tessellation.normalise_length"><code class="name flex">
+<dt id="geodome.tessellation.normalise_length"><code class="name flex">
 <span>def <span class="ident">normalise_length</span></span>(<span>coords: numpy.ndarray) ‑> numpy.ndarray</span>
 </code></dt>
 <dd>
@@ -736,8 +741,7 @@ def normalise_length(coords: np.ndarray) -&gt; np.ndarray:
         np.ndarray: normalised coordinate
     &#34;&#34;&#34;
     length = math.sqrt(
-        math.pow(coords[0], 2) + math.pow(coords[1], 2) +
-        math.pow(coords[2], 2)
+        math.pow(coords[0], 2) + math.pow(coords[1], 2) + math.pow(coords[2], 2)
     )
 
     is_zero(coords, &#34;normalise&#34;)
@@ -751,8 +755,68 @@ def normalise_length(coords: np.ndarray) -&gt; np.ndarray:
     )</code></pre>
 </details>
 </dd>
-<dt id="geo_dome.tessellation.tessellate_geodesic_dome"><code class="name flex">
-<span>def <span class="ident">tessellate_geodesic_dome</span></span>(<span>vertices: numpy.ndarray, triangles: numpy.ndarray, target_triangles: numpy.ndarray = None) ‑> numpy.ndarray</span>
+<dt id="geodome.tessellation.old_add_middle_get_index"><code class="name flex">
+<span>def <span class="ident">old_add_middle_get_index</span></span>(<span>matrix: numpy.ndarray, new_vertices: numpy.ndarray, old_vertices: numpy.ndarray, v_index: numpy.int64, v1: numpy.int64, v2: numpy.int64) ‑> numpy.int64</span>
+</code></dt>
+<dd>
+<div class="desc"><p>Matrix based method for inserting new vertices with the guarantee of uniqueness</p>
+<h2 id="args">Args</h2>
+<dl>
+<dt><strong><code>matrix</code></strong> :&ensp;<code>np.ndarray</code></dt>
+<dd>(Nvertices x Nvertices) matrix</dd>
+<dt><strong><code>new_vertices</code></strong> :&ensp;<code>np.ndarray</code></dt>
+<dd>Array to store new vertices</dd>
+<dt><strong><code>old_vertices</code></strong> :&ensp;<code>np.ndarray</code></dt>
+<dd>Array of old vertices</dd>
+<dt><strong><code>v_index</code></strong> :&ensp;<code>np.int64</code></dt>
+<dd>Current index of new vertices</dd>
+<dt><strong><code>v1</code></strong> :&ensp;<code>np.int64</code></dt>
+<dd>Index of outer vertex</dd>
+<dt><strong><code>v2</code></strong> :&ensp;<code>np.int64</code></dt>
+<dd>Index of other outer vertex</dd>
+</dl>
+<h2 id="returns">Returns</h2>
+<dl>
+<dt><code>Union[np.int64, np.int64]</code></dt>
+<dd>index of inserted vertex, new v_index</dd>
+</dl></div>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@njit
+def old_add_middle_get_index(
+    matrix: np.ndarray,
+    new_vertices: np.ndarray,
+    old_vertices: np.ndarray,
+    v_index: np.int64,
+    v1: np.int64,
+    v2: np.int64,
+) -&gt; Union[np.int64, np.int64]:
+    &#34;&#34;&#34;Matrix based method for inserting new vertices with the guarantee of uniqueness
+
+    Args:
+        matrix (np.ndarray): (Nvertices x Nvertices) matrix
+        new_vertices (np.ndarray): Array to store new vertices
+        old_vertices (np.ndarray): Array of old vertices
+        v_index (np.int64): Current index of new vertices
+        v1 (np.int64): Index of outer vertex
+        v2 (np.int64): Index of other outer vertex
+
+    Returns:
+        Union[np.int64, np.int64]: index of inserted vertex, new v_index
+    &#34;&#34;&#34;
+    if matrix[v1][v2] == -1:
+        matrix[v1][v2] = v_index
+        matrix[v2][v1] = v_index
+        new_vertices[v_index] = get_middle_coords(old_vertices[v1], old_vertices[v2])
+        v_index += 1
+
+    return matrix[v1][v2], v_index</code></pre>
+</details>
+</dd>
+<dt id="geodome.tessellation.tessellate_geodesic_dome"><code class="name flex">
+<span>def <span class="ident">tessellate_geodesic_dome</span></span>(<span>vertices: numpy.ndarray, triangles: numpy.ndarray, target_triangles: numpy.ndarray = array([], dtype=int64)) ‑> numpy.ndarray</span>
 </code></dt>
 <dd>
 <div class="desc"><p>Tessellates the target triangles in the dome</p>
@@ -778,14 +842,16 @@ def normalise_length(coords: np.ndarray) -&gt; np.ndarray:
 </summary>
 <pre><code class="python">@njit
 def tessellate_geodesic_dome(
-    vertices: np.ndarray, triangles: np.ndarray, target_triangles: np.ndarray = None
+    vertices: np.ndarray,
+    triangles: np.ndarray,
+    target_triangles: np.ndarray = np.zeros(0, dtype=np.int64),
 ) -&gt; Union[np.ndarray, np.ndarray]:
     &#34;&#34;&#34;Tessellates the target triangles in the dome
 
     Args:
         vertices (np.ndarray): Array of vertices
         triangles (np.ndarray): Array of triangles
-        target_triangles (np.ndarray): Target triangles to tessellate 
+        target_triangles (np.ndarray): Target triangles to tessellate
                                         (optional: tessellates all triangles if not given)
 
     Returns:
@@ -794,25 +860,27 @@ def tessellate_geodesic_dome(
     &#34;&#34;&#34;
 
     # Fill target with all triangles if not given
-    if (target_triangles == None):
+    if len(target_triangles) == 0:
         target_triangles = np.arange(len(triangles))
 
     # First calculate the number of edges covered by the current triangles
-
-    generous_edge_count = len(target_triangles) * 3
 
     # create new array for new triangles
     n_new_triangles = len(triangles) + 3 * len(target_triangles)
     new_triangles = np.zeros((n_new_triangles, 3), dtype=np.int64)
     n_old_vertices = len(vertices)
+    generous_edge_count = len(target_triangles) * 3 + n_old_vertices
     # create new array for new vertices
     new_vertices = np.zeros((generous_edge_count, 3), dtype=np.float64)
-    vertex_matrix = np.full((len(vertices), len(vertices)), -1, dtype=np.int64)
-    v_index = 0
+    v_dict = Dict.empty(key_type=np.float64, value_type=np.int64)
 
     i = 0
 
     hit_triangles = np.zeros((len(triangles)), dtype=np.int8)
+
+    # Add all existing vertices to dictionary
+    for v in vertices:
+        add_vertex_get_index(v, new_vertices, v_dict)
 
     for t in target_triangles:
         tri = triangles[t]
@@ -822,17 +890,14 @@ def tessellate_geodesic_dome(
         v1 = vertices[tri[1]]
         v2 = vertices[tri[2]]
 
-        # Get midpoints for each edge of the triangle
-        index01, v_index = add_middle_get_index(
-            vertex_matrix, new_vertices, vertices, v_index, tri[0], tri[1])
-        index12, v_index = add_middle_get_index(
-            vertex_matrix, new_vertices, vertices, v_index, tri[1], tri[2])
-        index02, v_index = add_middle_get_index(
-            vertex_matrix, new_vertices, vertices,  v_index, tri[0], tri[2])
+        # Get midpoints for each edge of the triangle and normalise
+        mid01 = normalise_length(get_middle_coords(v0, v1))
+        mid12 = normalise_length(get_middle_coords(v1, v2))
+        mid02 = normalise_length(get_middle_coords(v0, v2))
 
-        index01 += n_old_vertices
-        index12 += n_old_vertices
-        index02 += n_old_vertices
+        index01 = add_vertex_get_index(mid01, new_vertices, v_dict)
+        index12 = add_vertex_get_index(mid12, new_vertices, v_dict)
+        index02 = add_vertex_get_index(mid02, new_vertices, v_dict)
 
         # Create new triangles
         new_triangles[i] = [tri[0], index01, index02]
@@ -849,22 +914,21 @@ def tessellate_geodesic_dome(
             new_triangles[i] = t
             i += 1
 
-    normalise_all(new_vertices)
-    # Keep track of all previous vertices
-    old_vertices = vertices
     # Create array to concatenate old vertices with new midpoints
-    vertices = np.zeros(
-        (len(old_vertices) + v_index, 3), dtype=np.float64)
+    vertices = np.zeros((len(v_dict), 3), dtype=np.float64)
 
-    i = 0
-    # Add old vertices
-    for v in old_vertices:
-        vertices[i] = v
-        i += 1
-    # Add new midpoints
-    for j in range(v_index):
-        vertices[i] = new_vertices[j]
-        i += 1
+    for i in range(len(v_dict)):
+        vertices[i] = new_vertices[i]
+
+    # i = 0
+    # # Add old vertices
+    # for v in old_vertices:
+    #     vertices[i] = v
+    #     i += 1
+    # # Add new midpoints
+    # for j in range(v_index):
+    #     vertices[i] = new_vertices[j]
+    #     i += 1
 
     new_adj_list = create_adj_list(vertices, new_triangles)
     return vertices, new_triangles, new_adj_list</code></pre>
@@ -883,20 +947,20 @@ def tessellate_geodesic_dome(
 <ul id="index">
 <li><h3>Super-module</h3>
 <ul>
-<li><code><a title="geo_dome" href="index.html">geo_dome</a></code></li>
+<li><code><a title="geodome" href="index.html">geodome</a></code></li>
 </ul>
 </li>
 <li><h3><a href="#header-functions">Functions</a></h3>
 <ul class="">
-<li><code><a title="geo_dome.tessellation.add_middle_get_index" href="#geo_dome.tessellation.add_middle_get_index">add_middle_get_index</a></code></li>
-<li><code><a title="geo_dome.tessellation.calc_dist" href="#geo_dome.tessellation.calc_dist">calc_dist</a></code></li>
-<li><code><a title="geo_dome.tessellation.create_geodesic_dome" href="#geo_dome.tessellation.create_geodesic_dome">create_geodesic_dome</a></code></li>
-<li><code><a title="geo_dome.tessellation.find_adjacent_triangles" href="#geo_dome.tessellation.find_adjacent_triangles">find_adjacent_triangles</a></code></li>
-<li><code><a title="geo_dome.tessellation.get_middle_coords" href="#geo_dome.tessellation.get_middle_coords">get_middle_coords</a></code></li>
-<li><code><a title="geo_dome.tessellation.is_zero" href="#geo_dome.tessellation.is_zero">is_zero</a></code></li>
-<li><code><a title="geo_dome.tessellation.normalise_all" href="#geo_dome.tessellation.normalise_all">normalise_all</a></code></li>
-<li><code><a title="geo_dome.tessellation.normalise_length" href="#geo_dome.tessellation.normalise_length">normalise_length</a></code></li>
-<li><code><a title="geo_dome.tessellation.tessellate_geodesic_dome" href="#geo_dome.tessellation.tessellate_geodesic_dome">tessellate_geodesic_dome</a></code></li>
+<li><code><a title="geodome.tessellation.add_vertex_get_index" href="#geodome.tessellation.add_vertex_get_index">add_vertex_get_index</a></code></li>
+<li><code><a title="geodome.tessellation.calc_dist" href="#geodome.tessellation.calc_dist">calc_dist</a></code></li>
+<li><code><a title="geodome.tessellation.create_geodesic_dome" href="#geodome.tessellation.create_geodesic_dome">create_geodesic_dome</a></code></li>
+<li><code><a title="geodome.tessellation.find_adjacent_triangles" href="#geodome.tessellation.find_adjacent_triangles">find_adjacent_triangles</a></code></li>
+<li><code><a title="geodome.tessellation.get_middle_coords" href="#geodome.tessellation.get_middle_coords">get_middle_coords</a></code></li>
+<li><code><a title="geodome.tessellation.is_zero" href="#geodome.tessellation.is_zero">is_zero</a></code></li>
+<li><code><a title="geodome.tessellation.normalise_length" href="#geodome.tessellation.normalise_length">normalise_length</a></code></li>
+<li><code><a title="geodome.tessellation.old_add_middle_get_index" href="#geodome.tessellation.old_add_middle_get_index">old_add_middle_get_index</a></code></li>
+<li><code><a title="geodome.tessellation.tessellate_geodesic_dome" href="#geodome.tessellation.tessellate_geodesic_dome">tessellate_geodesic_dome</a></code></li>
 </ul>
 </li>
 </ul>
